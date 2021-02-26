@@ -1,8 +1,12 @@
 from __future__ import annotations
 import pickle
+import sys
+import inspect
+from access import privaccess
 from table import Table
 from time import sleep, localtime, strftime
 import os
+import hashlib
 from btree import Btree
 import shutil
 from misc import split_condition
@@ -12,18 +16,24 @@ class Database:
     Database class contains tables.
     '''
 
-    def __init__(self, name, load=True):
+    def __init__(self, name, load=True,user=nop):
         self.tables = {}
         self._name = name
+        self._user = user
+        self._password = password 
 
         self.savedir = f'dbdata/{name}_db'
 
         if load:
+        
             try:
+                self.current_user=self.get_user(user,password)
                 self.load(self.savedir)
                 print(f'Loaded "{name}".')
                 return
-            except:
+            except Exception as e :
+                if("Not a valid User" in str(e)):
+                    sys.exit(1) 
                 print(f'"{name}" db does not exist, creating new.')
 
         # create dbdata directory if it doesnt exist
@@ -36,15 +46,63 @@ class Database:
         except:
             pass
 
-        # create all the meta tables
+        #create the first user
+        self.first_user(dbname,user,password)
+         # create all the meta tables       
+        self.create_table('meta_users',['user', 'password', 'priv', 'db', 'tables'],[str,str,str,str,str])
         self.create_table('meta_length',  ['table_name', 'no_of_rows'], [str, int])
         self.create_table('meta_locks',  ['table_name', 'locked'], [str, bool])
         self.create_table('meta_insert_stack',  ['table_name', 'indexes'], [str, list])
         self.create_table('meta_indexes',  ['table_name', 'index_name'], [str, str])
         self.save()
+    #create a user of priv system with username:admin and password:admin
+    def first_user(self,dbname,user,password):
+        if (user==nop):
+            user="admin"
+            #password=self.encode("admin")
+            password="admin"
+        self.tables['meta_users'].insert([user,password,"master",dbname,"*"])
 
+    #check user
+    def get_user(self,user,password)
+        checktable=self.tables['meta_users'].select_where("*,f'user=={user}')
+        if (len(checktable.user)==0):
+            raise Exception('Not a valid User')
+        
+        if (checktable.user[0]==user and checktable.password[0]==password):
+            return checktable
+        else:
+            raise Exception('Not a valid User')
+    # creating a new user and adding him to the meta_users table
+    @privaccess('system')
+    def create_user(self,user,password,priv,tables):
+        privs=["master","admin","user"]
+        checktable=self.tables['meta_users'].select_where("*,f'user=={user}')
+        if (self.current_user.priv[0]=="master"):
+            if not checktable.user:
+                if priv in privs:
+                    if tables != "*":
+                            try:
+                                for table in tables.split(","):
+                                    try:
+                                        data = self.tables[table]
+                                    except Exception as e:
+                                        raise Exception('Table does not exist')
 
-
+                            except Exception as e:
+                                raise Exception('Seperate tables with ",". For all tables use "*"')
+                #password=self.encode(password)
+                self.tables['meta_users'.insert([user,password,priv,dbname,tables])
+                self.save() 
+            else:
+                raise Exception ('User already exists')
+        
+        else:
+            raise Exception ('Only "master" user can create new users')
+    
+    # All @privaccess('') give the required minimum priv and calls the function to checks if
+    # the current user has it.
+    @privaccess('admin')
     def save(self):
         '''
         Save db as a pkl file. This method saves the db object, ie all the tables and attributes.
@@ -74,12 +132,12 @@ class Database:
             name = f'{file.split(".")[0]}'
             self.tables.update({name: tmp_dict})
             setattr(self, name, self.tables[name])
-
+    @privaccess('admin')
     def drop_db(self):
         shutil.rmtree(self.savedir)
 
     #### IO ####
-
+    @privaccess('admin')
     def _update(self):
         '''
         Update all the meta tables.
@@ -88,7 +146,7 @@ class Database:
         self._update_meta_locks()
         self._update_meta_insert_stack()
 
-
+    @privaccess('admin')
     def create_table(self, name=None, column_names=None, column_types=None, primary_key=None, load=None):
         '''
         This method create a new table. This table is saved and can be accessed by
@@ -108,7 +166,7 @@ class Database:
         self._update()
         self.save()
 
-
+    @privaccess('admin')
     def drop_table(self, table_name):
         '''
         Drop table with name 'table_name' from current db
@@ -130,7 +188,7 @@ class Database:
         # self._update()
         self.save()
 
-
+    @privaccess('admin')
     def table_from_csv(self, filename, name=None, column_types=None, primary_key=None):
         '''
         Create a table from a csv file.
@@ -159,7 +217,7 @@ class Database:
         self._update()
         self.save()
 
-
+    @privaccess('admin')
     def table_to_csv(self, table_name, filename=None):
         res = ''
         for row in [self.tables[table_name].column_names]+self.tables[table_name].data:
@@ -170,7 +228,7 @@ class Database:
 
         with open(filename, 'w') as file:
            file.write(res)
-
+    @privaccess('admin')
     def table_from_object(self, new_table):
         '''
         Add table obj to database.
@@ -195,7 +253,7 @@ class Database:
     # tables.
 
     # these function calls are named close to the ones in postgres
-
+    @privaccess('admin')
     def cast_column(self, table_name, column_name, cast_type):
         '''
         Change the type of the specified column and cast all the prexisting values.
@@ -213,7 +271,7 @@ class Database:
         self.unlock_table(table_name)
         self._update()
         self.save()
-
+    @privaccess('admin')
     def insert(self, table_name, row, lock_load_save=True):
         '''
         Inserts into table
@@ -242,7 +300,7 @@ class Database:
             self._update()
             self.save()
 
-
+    @privaccess('admin')
     def update(self, table_name, set_value, set_column, condition):
         '''
         Update the value of a column where condition is met.
@@ -264,7 +322,7 @@ class Database:
         self.unlock_table(table_name)
         self._update()
         self.save()
-
+    @privaccess('admin')
     def delete(self, table_name, condition):
         '''
         Delete rows of a table where condition is met.
@@ -329,7 +387,7 @@ class Database:
                 return table
             else:
                 table.show()
-
+    @privaccess('user')
     def show_table(self, table_name, no_of_rows=None):
         '''
         Print a table using a nice tabular design (tabulate)
@@ -340,7 +398,7 @@ class Database:
         if self.is_locked(table_name):
             return
         self.tables[table_name].show(no_of_rows, self.is_locked(table_name))
-
+    @privaccess('user')
     def sort(self, table_name, column_name, asc=False):
         '''
         Sorts a table based on a column
@@ -358,7 +416,7 @@ class Database:
         self.unlock_table(table_name)
         self._update()
         self.save()
-
+    @privaccess('user')
     def inner_join(self, left_table_name, right_table_name, condition, save_as=None, return_object=False):
         '''
         Join two tables that are part of the database where condition is met.
@@ -506,7 +564,7 @@ class Database:
         '''
         self.tables['meta_insert_stack']._update_row(new_stack, 'indexes', f'table_name=={table_name}')
 
-
+    @privaccess('admin')
     # indexes
     def create_index(self, table_name, index_name, index_type='Btree'):
         '''
